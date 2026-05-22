@@ -8,6 +8,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
@@ -31,6 +32,7 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,7 +48,6 @@ public class MainActivity extends AppCompatActivity {
     private WallpaperManager wallpaperManager;
     private Bitmap originalBitmap;
     private Bitmap modifiedBitmap;
-    private static final float MAX_RADIUS_PER_PASS = 11.0f;
     private final AtomicInteger requestCounter = new AtomicInteger(0);
 
     // Executor for background tasks
@@ -61,17 +62,10 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // --- 1. Initialize UI and Services ---
         initializeViews();
         wallpaperManager = WallpaperManager.getInstance(this);
-
-        // --- 2. Initialize the Launchers ---
         setupLaunchers();
-
-        // --- 3. Setup Listeners for Controls ---
         setupListeners();
-
-        // --- 4. Start the Process ---
         loadWallpaperFromFile();
     }
 
@@ -109,9 +103,7 @@ public class MainActivity extends AppCompatActivity {
                 if (bitmap != null) {
                     originalBitmap = bitmap;
                     modifiedBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true);
-                    
                     updateDynamicColors(originalBitmap);
-                    
                     runOnUiThread(() -> {
                         wallpaperImageView.setImageBitmap(modifiedBitmap);
                         applyEffects();
@@ -127,10 +119,8 @@ public class MainActivity extends AppCompatActivity {
     private void updateDynamicColors(Bitmap bitmap) {
         Palette.from(bitmap).generate(palette -> {
             if (palette != null) {
-                Palette.Swatch activeColorSwatch = palette.getVibrantSwatch();
-                if (activeColorSwatch == null) {
-                    activeColorSwatch = palette.getMutedSwatch();
-                }
+                Palette.Swatch activeColorSwatch = palette.getVibrantSwatch() != null ? 
+                        palette.getVibrantSwatch() : palette.getMutedSwatch();
 
                 if (activeColorSwatch != null) {
                     ColorStateList colorStateList = ColorStateList.valueOf(activeColorSwatch.getRgb());
@@ -144,8 +134,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadWallpaperFromFile() {
-        if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
             executor.execute(() -> {
                 ParcelFileDescriptor pfd = null;
                 try {
@@ -154,9 +143,7 @@ public class MainActivity extends AppCompatActivity {
                         FileDescriptor fd = pfd.getFileDescriptor();
                         originalBitmap = BitmapFactory.decodeFileDescriptor(fd);
                         modifiedBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true);
-
                         updateDynamicColors(originalBitmap);
-
                         runOnUiThread(() -> {
                             wallpaperImageView.setImageBitmap(modifiedBitmap);
                             applyEffects();
@@ -167,11 +154,7 @@ public class MainActivity extends AppCompatActivity {
                     runOnUiThread(() -> Toast.makeText(this, "Failed to load wallpaper.", Toast.LENGTH_SHORT).show());
                 } finally {
                     if (pfd != null) {
-                        try {
-                            pfd.close();
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                        }
+                        try { pfd.close(); } catch (IOException ignored) {}
                     }
                 }
             });
@@ -182,86 +165,95 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupListeners() {
         com.google.android.material.slider.Slider.OnChangeListener sliderListener = (slider, value, fromUser) -> {
-            if (fromUser) {
-                applyEffects();
-            }
+            if (fromUser) applyEffects();
         };
-
         blurSlider.addOnChangeListener(sliderListener);
         darkenSlider.addOnChangeListener(sliderListener);
-
         setHomeButton.setOnClickListener(view -> setWallpaper(WallpaperManager.FLAG_SYSTEM));
         setLockButton.setOnClickListener(view -> setWallpaper(WallpaperManager.FLAG_LOCK));
         pickPhotoButton.setOnClickListener(view -> pickMediaLauncher.launch("image/*"));
         saveButton.setOnClickListener(view -> saveImageToGallery());
     }
 
-    private void saveImageToGallery() {
-        if (modifiedBitmap == null) {
-            Toast.makeText(this, "No image to save.", Toast.LENGTH_SHORT).show();
-            return;
-        }
+    /**
+     * HIGH QUALITY BLUR IMPLEMENTATION
+     * Uses dynamic sampling and multi-pass intrinsic blur to achieve massive radii
+     * while maintaining smooth gradients and high performance on modern screens.
+     */
+    private void blurBitmapHighQuality(Bitmap bitmap, float totalRadius) {
+        if (totalRadius <= 0) return;
 
-        executor.execute(() -> {
-            ContentValues values = new ContentValues();
-            String fileName = "blurred_wallpaper_" + System.currentTimeMillis() + ".png";
-            values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
-            values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
-            
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/BlurWallpaper");
-                values.put(MediaStore.Images.Media.IS_PENDING, 1);
-            }
+        // 1. Determine optimal sampling factor based on radius
+        // For larger blurs, we can scale down more without detail loss
+        float sampling = 1.0f;
+        if (totalRadius > 50) sampling = 4.0f;
+        else if (totalRadius > 20) sampling = 2.0f;
 
-            Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+        float scaledRadius = totalRadius / sampling;
+        
+        // 2. Scale down for performance and effective radius boost
+        int width = Math.round(bitmap.getWidth() / sampling);
+        int height = Math.round(bitmap.getHeight() / sampling);
+        
+        Bitmap smallBitmap = Bitmap.createScaledBitmap(bitmap, width, height, true);
+        
+        // 3. Apply hardware-accelerated blur on the small bitmap
+        RenderScript rs = RenderScript.create(this);
+        Allocation input = Allocation.createFromBitmap(rs, smallBitmap);
+        Allocation output = Allocation.createTyped(rs, input.getType());
+        ScriptIntrinsicBlur script = ScriptIntrinsicBlur.create(rs, Element.U8_4(rs));
 
-            if (uri != null) {
-                try (OutputStream outputStream = getContentResolver().openOutputStream(uri)) {
-                    modifiedBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream);
-                    
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                        values.clear();
-                        values.put(MediaStore.Images.Media.IS_PENDING, 0);
-                        getContentResolver().update(uri, values, null, null);
-                    }
-                    
-                    runOnUiThread(() -> Toast.makeText(this, "Image saved to gallery!", Toast.LENGTH_SHORT).show());
-                } catch (IOException e) {
-                    e.printStackTrace();
-                    runOnUiThread(() -> Toast.makeText(this, "Failed to save image.", Toast.LENGTH_SHORT).show());
-                }
-            } else {
-                runOnUiThread(() -> Toast.makeText(this, "Failed to create MediaStore entry.", Toast.LENGTH_SHORT).show());
-            }
-        });
-    }
-
-    private void blurBitmapAdvanced(Bitmap bitmap, float radius, int iterations) {
-        float scaleFactor = 3f;
-        for (int i = 0; i < iterations; i++) {
-            int smallWidth = (int) (bitmap.getWidth() / scaleFactor);
-            int smallHeight = (int) (bitmap.getHeight() / scaleFactor);
-            Bitmap tempBitmap = Bitmap.createScaledBitmap(bitmap, smallWidth, smallHeight, true);
-
-            RenderScript rs = RenderScript.create(this);
-            Allocation input = Allocation.createFromBitmap(rs, tempBitmap);
-            Allocation output = Allocation.createTyped(rs, input.getType());
-            ScriptIntrinsicBlur script = ScriptIntrinsicBlur.create(rs, Element.U8_4(rs));
-
-            script.setRadius(Math.min(radius, 25.0f));
+        // ScriptIntrinsicBlur max radius is 25. If scaledRadius > 25, we use multiple passes.
+        int passes = (int) Math.ceil(scaledRadius / 25.0f);
+        float radiusPerPass = scaledRadius / passes;
+        
+        script.setRadius(radiusPerPass);
+        for (int i = 0; i < passes; i++) {
             script.setInput(input);
             script.forEach(output);
-
-            output.copyTo(tempBitmap);
-            Canvas canvas = new Canvas(bitmap);
-            canvas.drawBitmap(tempBitmap, null, new android.graphics.Rect(0, 0, bitmap.getWidth(), bitmap.getHeight()), null);
-
-            tempBitmap.recycle();
-            input.destroy();
-            output.destroy();
-            script.destroy();
-            rs.destroy();
+            output.copyTo(smallBitmap);
+            input.copyFrom(smallBitmap); // Prepare for next pass
         }
+
+        // 4. Scale up with filtering (Bilinear)
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        canvas.drawBitmap(smallBitmap, null, new android.graphics.Rect(0, 0, bitmap.getWidth(), bitmap.getHeight()), paint);
+
+        // 5. Anti-Banding / Dithering (High Quality Touch)
+        // Adds a minute amount of noise to prevent visible color steps in large blurs
+        applyDither(bitmap);
+
+        // Cleanup
+        smallBitmap.recycle();
+        input.destroy();
+        output.destroy();
+        script.destroy();
+        rs.destroy();
+    }
+
+    private void applyDither(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int[] pixels = new int[width * height];
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+        
+        Random random = new Random();
+        for (int i = 0; i < pixels.length; i++) {
+            int color = pixels[i];
+            int r = Color.red(color);
+            int g = Color.green(color);
+            int b = Color.blue(color);
+            
+            // Add tiny random noise (-1 to 1) to break up bands
+            int noise = random.nextInt(3) - 1;
+            r = Math.max(0, Math.min(255, r + noise));
+            g = Math.max(0, Math.min(255, g + noise));
+            b = Math.max(0, Math.min(255, b + noise));
+            
+            pixels[i] = Color.rgb(r, g, b);
+        }
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
     }
 
     private void applyEffects() {
@@ -274,14 +266,13 @@ public class MainActivity extends AppCompatActivity {
             int darkenValue = (int) darkenSlider.getValue();
 
             Bitmap newModifiedBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true);
+            
+            // Apply Darken first (usually better for color depth)
             darkenBitmap(newModifiedBitmap, darkenValue);
 
+            // Apply High Quality Blur
             if (blurValue > 0) {
-                float totalDesiredRadius = blurValue;
-                int iterations = (int) Math.ceil(totalDesiredRadius / MAX_RADIUS_PER_PASS);
-                if (iterations < 1) iterations = 1;
-                float radiusPerPass = totalDesiredRadius / iterations;
-                blurBitmapAdvanced(newModifiedBitmap, radiusPerPass, iterations);
+                blurBitmapHighQuality(newModifiedBitmap, blurValue);
             }
 
             if (currentRequest == requestCounter.get()) {
@@ -298,21 +289,44 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setWallpaper(int flag) {
-        if (modifiedBitmap == null) {
-            Toast.makeText(this, "Image not ready yet.", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
+        if (modifiedBitmap == null) return;
         executor.execute(() -> {
             try {
                 wallpaperManager.setBitmap(modifiedBitmap, null, true, flag);
                 runOnUiThread(() -> {
-                    String location = (flag == WallpaperManager.FLAG_SYSTEM) ? "Home screen" : "Lock screen";
-                    Toast.makeText(MainActivity.this, "Wallpaper set for " + location, Toast.LENGTH_SHORT).show();
+                    String loc = (flag == WallpaperManager.FLAG_SYSTEM) ? "Home screen" : "Lock screen";
+                    Toast.makeText(this, "Wallpaper set for " + loc, Toast.LENGTH_SHORT).show();
                 });
             } catch (IOException e) {
                 e.printStackTrace();
-                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Failed to set wallpaper.", Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    private void saveImageToGallery() {
+        if (modifiedBitmap == null) return;
+        executor.execute(() -> {
+            ContentValues values = new ContentValues();
+            String fileName = "blurred_wallpaper_" + System.currentTimeMillis() + ".png";
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/BlurWallpaper");
+                values.put(MediaStore.Images.Media.IS_PENDING, 1);
+            }
+            Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (uri != null) {
+                try (OutputStream outputStream = getContentResolver().openOutputStream(uri)) {
+                    modifiedBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream);
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        values.clear();
+                        values.put(MediaStore.Images.Media.IS_PENDING, 0);
+                        getContentResolver().update(uri, values, null, null);
+                    }
+                    runOnUiThread(() -> Toast.makeText(this, "Saved to gallery!", Toast.LENGTH_SHORT).show());
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
             }
         });
     }
