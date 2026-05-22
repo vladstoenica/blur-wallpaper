@@ -77,17 +77,45 @@
             app:trackColorInactive="@color/white_transparent" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/pickPhotoButton"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:layout_marginEnd="8dp"
+            android:text="Pick Photo"
+            android:textColor="@android:color/white"
+            app:layout_constraintEnd_toStartOf="@id/saveButton"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/darkenSlider"
+            app:strokeColor="@android:color/white" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/saveButton"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="16dp"
+            android:text="Save to Gallery"
+            android:textColor="@android:color/white"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toEndOf="@id/pickPhotoButton"
+            app:layout_constraintTop_toBottomOf="@id/darkenSlider"
+            app:strokeColor="@android:color/white" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/setHomeButton"
             style="?attr/materialButtonOutlinedStyle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="12dp"
             android:layout_marginEnd="8dp"
             android:text="Set Home Screen"
             android:textColor="@android:color/white"
             app:layout_constraintEnd_toStartOf="@id/setLockButton"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/darkenSlider"
+            app:layout_constraintTop_toBottomOf="@id/pickPhotoButton"
             app:strokeColor="@android:color/white" />
 
         <com.google.android.material.button.MaterialButton
@@ -96,12 +124,12 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="12dp"
             android:text="Set Lock Screen"
             android:textColor="@android:color/white"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toEndOf="@id/setHomeButton"
-            app:layout_constraintTop_toBottomOf="@id/darkenSlider"
+            app:layout_constraintTop_toBottomOf="@id/saveButton"
             app:strokeColor="@android:color/white" />
 
 
